@@ -5,10 +5,10 @@ notebook
 git+https://github.com/openai/CLIP.git
 torch-encoding==1.2.1
 # opencv-python==4.7.0.68
-opencv-python==4.1.2.30
+opencv-python
 imageio==2.23.0
 imageio-ffmpeg==0.4.7
-pytorch-lightning==1.8.1
+pytorch-lightning
 altair==4.1.0
 timm==0.6.12
 tensorboardX==2.2
