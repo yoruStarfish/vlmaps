@@ -55,11 +55,12 @@ def generate_nav_maps(map_save_dir, target_object="chair"):
     clip_model, _ = clip.load("ViT-B/32", device=device)
     clip_model.eval()
 
-    lang_tokens = clip.tokenize(categories).to(device)
-    with torch.no_grad():
-        text_feats = clip_model.encode_text(lang_tokens)
-        text_feats = text_feats / text_feats.norm(dim=-1, keepdim=True)
-    text_feats = text_feats.cpu().numpy()
+    # lang_tokens = clip.tokenize(categories).to(device)
+    # with torch.no_grad():
+    #     text_feats = clip_model.encode_text(lang_tokens)
+    #     text_feats = text_feats / text_feats.norm(dim=-1, keepdim=True)
+    # text_feats = text_feats.cpu().numpy()
+    text_feats = get_text_feats(categories, clip_model, clip_feat_dim=512, batch_size=64)
 
     # --- 5. 矩陣內積：計算每個網格最像哪個單字 ---
     print("🔍 正在進行地圖語意檢索...")
@@ -85,6 +86,32 @@ def generate_nav_maps(map_save_dir, target_object="chair"):
     # 把屬於障礙物的地方從目標遮罩中剔除 (避免目標點出現在牆壁或未探索區域裡面)
     target_mask[no_map_mask] = 0
     cv2.imwrite(os.path.join(map_save_dir, f"target_mask_{target_object}.png"), target_mask)
+
+    # --- 7. 產出給 Nav2 導航用的.yaml ---
+
+    # 假設你在 VLMaps 建圖時使用的參數是預設的
+    cs = 0.05
+    gs = 1000
+    
+    # 計算地圖左下角在真實世界的 (X, Y) 座標
+    # 注意：因為我們前面有做「自動裁切 (Cropping)」，所以原點也要跟著偏移！
+    # 原本的左下角是 -25.0，現在我們切掉了 xmin 和 ymin 個網格
+    origin_x = (-gs * cs / 2.0) + (xmin * cs)
+    origin_y = (-gs * cs / 2.0) + (ymin * cs)
+
+    yaml_content = f"""image: nav_obstacle_map.png
+        resolution: {cs}
+        origin: [{origin_x}, {origin_y}, 0.000000]
+        negate: 0
+        occupied_thresh: 0.65
+        free_thresh: 0.196
+        """
+    
+    yaml_path = os.path.join(map_save_dir, "nav_obstacle_map.yaml")
+    with open(yaml_path, "w") as f:
+        f.write(yaml_content)
+        
+    print(f"📄 成功生成 Nav2 專用設定檔: {yaml_path}")
 
     print(f"✅ 導航地圖產出完成！已存入 {map_save_dir}")
     print(f"➡️ 障礙物地圖: nav_obstacle_map.png")

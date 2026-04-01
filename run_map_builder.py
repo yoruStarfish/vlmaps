@@ -3,8 +3,7 @@ import sys
 import os
 import argparse
 
-# --- 1. 解決路徑問題：強制將 VLMaps 根目錄加入 Python 搜尋路徑 ---
-sys.path.append('/home/robotic/vlmaps')
+
 
 # --- 2. 放上我們的終極掉包魔法！ ---
 import timm
@@ -21,8 +20,7 @@ import torch
 import torchvision.transforms as transforms
 import clip
 
-# 因為上面加了 sys.path.append，現在找得到這些自訂套件了！
-from utils.clip_mapping_utils import load_pose, save_map, depth2pc, transform_pc, get_sim_cam_mat, pos2grid_id, project_point
+from utils.mapping_utils import load_pose, save_map, depth2pc, transform_pc, get_sim_cam_mat, pos2grid_id, project_point
 from lseg.modules.models.lseg_net import LSegEncNet
 from lseg.additional_utils.models import resize_image, pad_image, crop_image
 
@@ -40,14 +38,15 @@ def create_lseg_map_batch(img_save_dir, camera_height, cs=0.05, gs=1000, depth_s
     mask_version = 1 
     crop_size = 480 
     base_size = 520 
-    lang = "door,chair,ground,ceiling,other"
+    lang = "door,chair,table,ground,ceiling,other"
     labels = lang.split(",")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"使用裝置: {device}")
     
     clip_version = "ViT-B/32"
-    clip_feat_dim = 512
+    clip_feat_dim = {'RN50': 1024, 'RN101': 512, 'RN50x4': 640, 'RN50x16': 768,
+                    'RN50x64': 1024, 'ViT-B/32': 512, 'ViT-B/16': 512, 'ViT-L/14': 768}[clip_version]
     print("Loading CLIP model...")
     clip_model, preprocess = clip.load(clip_version) 
     clip_model.to(device).eval()
@@ -60,9 +59,11 @@ def create_lseg_map_batch(img_save_dir, camera_height, cs=0.05, gs=1000, depth_s
     model = LSegEncNet(lang, arch_option=0, block_depth=0, activation='lrelu', crop_size=crop_size)
     
     # 解決路徑問題：改成絕對路徑
+    model_state_dict = model.state_dict()
     checkpoint_path = "/home/robotic/vlmaps/lseg/checkpoints/demo_e200.ckpt"
     pretrained_state_dict = torch.load(checkpoint_path)
     pretrained_state_dict = {k.lstrip('net.'): v for k, v in pretrained_state_dict['state_dict'].items()}
+    model_state_dict.update(pretrained_state_dict)
     model.load_state_dict(pretrained_state_dict, strict=False)
     model.eval()
     model = model.cuda()
