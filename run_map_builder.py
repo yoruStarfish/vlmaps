@@ -4,7 +4,6 @@ import os
 import argparse
 
 
-
 # --- 2. 放上我們的終極掉包魔法！ ---
 import timm
 backup_url = 'https://github.com/rwightman/pytorch-image-models/releases/download/v0.1-vitjx/jx_vit_large_p16_384-b3be5167.pth'
@@ -23,6 +22,8 @@ import clip
 from utils.mapping_utils import load_pose, save_map, depth2pc, transform_pc, get_sim_cam_mat, pos2grid_id, project_point
 from lseg.modules.models.lseg_net import LSegEncNet
 from lseg.additional_utils.models import resize_image, pad_image, crop_image
+
+base_dir = os.path.expanduser('~/vlmaps_ws') # 以使用者主目錄為基底
 
 def load_depth(depth_filepath):
     # 這裡改成支援我們 data_collector 存的 cv2 png 格式
@@ -60,7 +61,7 @@ def create_lseg_map_batch(img_save_dir, camera_height, cs=0.05, gs=1000, depth_s
     
     # 解決路徑問題：改成絕對路徑
     model_state_dict = model.state_dict()
-    checkpoint_path = "/home/robotic/vlmaps/lseg/checkpoints/demo_e200.ckpt"
+    checkpoint_path = os.path.join(base_dir, "vlmapsSrc/lseg/checkpoints/demo_e200.ckpt") # 這裡的路徑要改成你實際存放 LSeg 模型權重檔的絕對路徑
     pretrained_state_dict = torch.load(checkpoint_path)
     pretrained_state_dict = {k.lstrip('net.'): v for k, v in pretrained_state_dict['state_dict'].items()}
     model_state_dict.update(pretrained_state_dict)
@@ -88,24 +89,25 @@ def create_lseg_map_batch(img_save_dir, camera_height, cs=0.05, gs=1000, depth_s
     pose_list = sorted([os.path.join(pose_dir, x) for x in os.listdir(pose_dir)])
 
     map_save_dir = os.path.join(img_save_dir, "map")
-    os.makedirs(map_save_dir, exist_ok=True)
+    os.makedirs(map_save_dir, exist_ok=True) # 確保存地圖的資料夾存在，如果不存在就自動建立 (dataset/map)
     
     color_top_down_save_path = os.path.join(map_save_dir, f"color_top_down_{mask_version}.npy") # 用來畫出彩色地圖用來畫出彩色俯視圖（給人看的）
     grid_save_path = os.path.join(map_save_dir, f"grid_lseg_{mask_version}.npy") # 用來記錄每個格子裡的 LSeg AI 特徵（512 維度的浮點數矩陣），這是給 VLMaps 算路徑規劃用的
     weight_save_path = os.path.join(map_save_dir, f"weight_lseg_{mask_version}.npy") # 用來記錄目前畫布上每個格子裡有多少點的 CLIP 特徵被融合進去（避免被地板的顏色蓋過桌子的顏色）
     obstacles_save_path = os.path.join(map_save_dir, "obstacles.npy")
 
+    # initialize a grid with zero position at the center
     color_top_down_height = (camera_height + 1) * np.ones((gs, gs), dtype=np.float32) #  用來記錄目前畫布上每個格子的「最高高度」（避免被地板的顏色蓋過桌子的顏色）
     color_top_down = np.zeros((gs, gs, 3), dtype=np.uint8)
     grid = np.zeros((gs, gs, clip_feat_dim), dtype=np.float32) # 來儲存每個格子的 LSeg AI 特徵(512 維度的浮點數矩陣）
-    obstacles = np.ones((gs, gs), dtype=np.uint8) # 用來記錄障礙物的二值化地圖（1 代表有障礙物，0 代表沒有障礙物）。初始值設為 1，表示一開始我們假設整個地圖都是有障礙物的，然後隨著點雲資料的加入，我們會把那些確定沒有障礙物的格子標記為 0。
+    obstacles = np.ones((gs, gs), dtype=np.uint8) # 用來記錄障礙物的二值化地圖（1 代表有障礙物，0 代表沒有障礙物）。初始值設為 1，表示一開始我們假設整個地圖都是有障礙物的，然後隨著點雲資料的加入，我們會把那些確定沒有障礙物的格子標記為 0
     weight = np.zeros((gs, gs), dtype=float) # 用來記錄這個格子被「蓋了幾次印章」，之後用來算特徵的平均值
 
     tf_list = []
     # 移除了 semantic 的 zip
     data_iter = zip(rgb_list, depth_list, pose_list)
     pbar = tqdm(total=len(rgb_list))
-    
+    # load all images and depths and poses
     for rgb_path, depth_path, pose_path in data_iter:
         bgr = cv2.imread(rgb_path)
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
@@ -123,6 +125,7 @@ def create_lseg_map_batch(img_save_dir, camera_height, cs=0.05, gs=1000, depth_s
 
         pix_feats = get_lseg_feat(model, rgb, labels, transform, crop_size, base_size) # 透過 LSeg 模型，算出這張 RGB 圖的每個像素對應的語義特徵（512 維度的浮點數矩陣）。這裡得到的 pix_feats 是一個形狀為 (1, 512, H', W') 的張量，其中 H' 和 W' 是經過 LSeg 模型處理後的特徵圖尺寸，通常會比原始 RGB 圖小一些（例如原始 RGB 圖是 480x640，LSeg 的特徵圖可能是 120x160）。我們後續會把這些特徵投影到地圖上，讓 VLMaps 可以利用這些語義資訊來做更聰明的路徑規劃。
         
+        # transform all points to the global frame
         pc, mask = depth2pc(depth) # 透過深度圖，算出相機視角下的 3D 點雲
         shuffle_mask = np.arange(pc.shape[1]) 
         np.random.shuffle(shuffle_mask)
