@@ -11,7 +11,6 @@ from scipy.ndimage import binary_dilation, binary_erosion, gaussian_filter, medi
 from shapely.geometry import Point, Polygon
 
 from vlmaps.utils.navigation_utils import get_dist_to_bbox_2d
-
 # from vlmaps.utils.mapping_utils import load_map
 
 
@@ -57,8 +56,9 @@ class Map:
         Setup the transformation from the standard mobile base coordinate
         (x forward, y left, z up) to base frame"""
         self.base2cam_tf = np.eye(4)
+        self.base2cam_tf[0, 3] = 0.25
         self.base2cam_tf[:3, :3] = np.array([self.map_config.pose_info.base2cam_rot]).reshape((3, 3))
-        self.base2cam_tf[1, 3] = self.map_config.pose_info.camera_height
+        self.base2cam_tf[2, 3] = self.map_config.pose_info.camera_height
         # transform the base coordinate such that x is forward, y is leftward, z is upward
         self.base_transform = np.eye(4)
         self.base_transform[0, :3] = self.map_config.pose_info.base_forward_axis
@@ -71,12 +71,12 @@ class Map:
         return NotImplementedError
 
     def load_map(self, map_dir: str):
-        return NotImplementedError
+        VLMapTracer.load_map(self, map_dir)
 
     def index_map(self, language_desc: str, with_init_cat: bool = True):
         return NotImplementedError
 
-    def generate_obstacle_map(self, h_min: float = 0, h_max: float = 1.5) -> np.ndarray:
+    def generate_obstacle_map(self, h_min: float = 0.35, h_max: float = 1.5) -> np.ndarray:
         """Generate topdown obstacle map from loaded 3D map
 
         Args:
@@ -165,6 +165,26 @@ class Map:
 
     @staticmethod
     def _dilate_map(binary_map: np.ndarray, dilate_iter: int = 0, gaussian_sigma: float = 1.0):
+        # --- 🚨 新增：在膨脹前，先殺死面積太小的孤立雜訊 ---
+        # 確保 map 是 uint8 格式，1 代表障礙物，0 代表空地 (視你的底層設定而定)
+        binary_uint8 = binary_map.astype(np.uint8)
+        
+        # 使用 OpenCV 的連通域分析找尋所有獨立的區塊
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary_uint8)
+        
+        # 建立一個乾淨的空地圖
+        clean_map = np.zeros_like(binary_uint8)
+        
+        # 標籤 0 是背景，我們從 1 開始遍歷每一個障礙物區塊
+        for i in range(1, num_labels):
+            # CC_STAT_AREA 代表這個區塊包含的像素數量
+            if stats[i, cv2.CC_STAT_AREA] >= 60:  # 🌟 面積大於等於 60 像素的才保留
+                clean_map[labels == i] = 1
+                
+        # 將過濾後的乾淨地圖交還給 binary_map 繼續後續的膨脹處理
+        binary_map = clean_map.astype(float)
+        # ----------------------------------------------------
+
         h, w = binary_map.shape
         binary_map = cv2.resize(binary_map.astype(float), (w * 2, h * 2))
         binary_map = gaussian_filter((binary_map).astype(float), sigma=gaussian_sigma, truncate=3)

@@ -342,10 +342,13 @@ def grid_id2pos_3d(row, col, height, camera_height, cs, gs):
     return [cam_x, cam_y, cam_z]
 
 
-def base_pos2grid_id_3d(gs, cs, x_base, y_base, z_base):
+def base_pos2grid_id_3d(gs, cs, x_base, y_base, z_base, offset_x=3.8, offset_y=-0.8):
     row = int(gs / 2 - int(x_base / cs))
     col = int(gs / 2 - int(y_base / cs))
     h = int(z_base / cs)
+    # row = int(gs / 2 - int((x_base - offset_x) / cs))
+    # col = int(gs / 2 - int((y_base - offset_y) / cs))
+    # h = int(z_base / cs)
     return [row, col, h]
 
 

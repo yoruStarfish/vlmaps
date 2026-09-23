@@ -1,0 +1,27 @@
+map_type: "vlmap" # "vlmap", "gt", "clip", "clip_gradcam", "vlmaps_lseg_3d"
+pose_info:
+  pose_type: mobile_base # mobile_base, camera_base
+  rot_type: "quat" # "mat", or "quat" (x, y, z, w)
+  # if pose_type is camera, the following parameters are ignored
+  # camera_height: 0.69 ＃ 比較矮的
+  camera_height: 0.82 # 比較矮的
+  base2cam_rot: [0, 0, 1, -1, 0, 0, 0, -1, 0]
+  base_forward_axis: [1, 0, 0]
+  base_left_axis: [0, 1, 0]
+  base_up_axis: [0, 0, 1]
+skip_frame: 1
+# cam_calib_mat: [1365.33605957031, 0, 968.332092285156, 0, 1364.95739746094, 575.483642578125, 0, 0, 1]
+cam_calib_mat: [1365.458984375, 0.0, 980.56494140625, 0.0, 1365.58227539062, 547.079956054688, 0.0, 0.0, 1.0]
+grid_size: 1000
+cell_size: 0.05
+depth_sample_rate: 3
+dilate_iter: 1 # 3
+gaussian_sigma: 1.0
+customize_obstacle_map: False
+potential_obstacle_names:
+  - "table"
+  - "wall"
+obstacle_names:
+  - "table"
+  - "wall"
+categories: "mp3d" # "mp3d", "ai2thor"

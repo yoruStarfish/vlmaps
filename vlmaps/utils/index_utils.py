@@ -75,6 +75,21 @@ def find_similar_category_id(class_name, classes_list):
 def get_segment_islands_pos(segment_map, label_id, detect_internal_contours=False):
     mask = segment_map == label_id
     mask = mask.astype(np.uint8)
+
+    # --- 🔍 偵錯確認：看看遮罩裡到底有沒有這個物品的像素 ---
+    pixel_count = np.sum(mask)
+    if pixel_count > 0:
+        print(f"找到 label_id {label_id} 的原始像素數量: {pixel_count}")
+    else:
+        print(f"警告：地圖中完全沒有 label_id {label_id} 的像素！")
+    # ----------------------------------------------------
+
+    # --- 🚨 終極破解：強制膨脹！讓 1 像素孤島變成 3x3 區塊 ---
+    # 這樣 OpenCV 絕對找得到，而且算出來的中心點不會偏移
+    if pixel_count > 0:
+        mask = cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=1)
+    # ----------------------------------------------------
+
     detect_type = cv2.RETR_EXTERNAL
     if detect_internal_contours:
         detect_type = cv2.RETR_TREE
@@ -82,10 +97,12 @@ def get_segment_islands_pos(segment_map, label_id, detect_internal_contours=Fals
     contours, hierarchy = cv2.findContours(mask, detect_type, cv2.CHAIN_APPROX_SIMPLE)
     # convert contours back to numpy index order
     contours_list = []
-    for contour in contours:
-        tmp = contour.reshape((-1, 2))
-        tmp_1 = np.stack([tmp[:, 1], tmp[:, 0]], axis=1)
-        contours_list.append(tmp_1)
+    # OpenCV 版本相容性防呆：如果 contours 是空的，就不要執行下面的迴圈
+    if contours is not None and len(contours) > 0:
+        for contour in contours:
+            tmp = contour.reshape((-1, 2))
+            tmp_1 = np.stack([tmp[:, 1], tmp[:, 0]], axis=1)
+            contours_list.append(tmp_1)
 
     centers_list = []
     bbox_list = []
@@ -95,6 +112,13 @@ def get_segment_islands_pos(segment_map, label_id, detect_internal_contours=Fals
         ymin = np.min(c[:, 1])
         ymax = np.max(c[:, 1])
         bbox_list.append([xmin, xmax, ymin, ymax])
+
+        # --- 新增：防呆機制，確保長寬至少為 1 (避免面積變成 0) ---
+        if xmax == xmin:
+            xmax += 1
+        if ymax == ymin:
+            ymax += 1
+        # ----------------------------------------------------
 
         centers_list.append([(xmin + xmax) / 2, (ymin + ymax) / 2])
 
@@ -218,7 +242,10 @@ def get_dynamic_obstacles_map_3d(
     mask2 = np.logical_and(obs_pts[:, 0] - rmin < new_obstacles.shape[0], obs_pts[ :, 1 ] - cmin < new_obstacles.shape[1])
     mask = np.logical_and(mask1, mask2)
     new_obstacles[obs_pts[mask, 0] - rmin, obs_pts[mask, 1] - cmin] = 1
-    new_obstacles[obs_pts[:, 0] - rmin, obs_pts[:, 1] - cmin] = 1
+    # new_obstacles[obs_pts[:, 0] - rmin, obs_pts[:, 1] - cmin] = 1
+    row_idx = np.clip(obs_pts[:, 0] - rmin, 0, new_obstacles.shape[0] - 1)
+    col_idx = np.clip(obs_pts[:, 1] - cmin, 0, new_obstacles.shape[1] - 1)
+    new_obstacles[row_idx, col_idx] = 1
     new_obstacles = np.logical_and(new_obstacles, all_obstacles_mask)
     new_obstacles = np.logical_not(new_obstacles)
 
