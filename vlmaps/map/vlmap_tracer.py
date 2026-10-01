@@ -297,7 +297,7 @@ if __name__ == "__main__":
     vlmap_tracer = VLMapTracer(map_config, data_dir)
     
     # 1. 建圖階段 (有 .h5df 後即可註解掉，節省時間)
-    vlmap_tracer.create_map(data_dir)
+    # vlmap_tracer.create_map(data_dir)
     
     # 2. 載入地圖
     vlmap_tracer.load_map(data_dir)

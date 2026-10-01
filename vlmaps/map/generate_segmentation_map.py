@@ -1,10 +1,20 @@
 import os
+import sys
 
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from omegaconf import OmegaConf
+
+base_dir = os.path.expanduser('~/vlmaps_ws')
+vlmaps_src_dir = os.path.join(base_dir, 'vlmapsSrc')
+
+
+
+# 將兩個層級的路徑都加入，確保不會再發生 ModuleNotFoundError
+if vlmaps_src_dir not in sys.path:
+    sys.path.insert(0, vlmaps_src_dir)
 
 from vlmaps.map.vlmap_tracer import VLMapTracer
 from vlmaps.utils.visualize_utils import pool_3d_label_to_2d
