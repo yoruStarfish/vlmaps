@@ -197,40 +197,105 @@ class TracerLangRobot:
               f"{goal.pose.position.y:.2f}) m", flush=True)
         return self._navigate_and_wait(goal)
 
-    def turn(self, angle_deg: float):
-        """
-        接收相對旋轉角度，並透過 Nav2 執行原地轉向。
+    def _refresh_rotation_pose(self, max_tf_age_s=2.0):
+        """Read a fresh composed TF instead of the localization timer cache."""
+        import math
+        import rclpy
+        if self.localization_node is None:
+            raise RuntimeError("未綁定 localization_node，無法更新旋轉定位。")
+        rclpy.spin_once(self.localization_node, timeout_sec=0.01)
+        trans = self.localization_node.tf_buffer.lookup_transform(
+            'map', 'base_link', Time(), timeout=Duration(seconds=0.1))
+        age = (self.localization_node.get_clock().now() -
+               Time.from_msg(trans.header.stamp)).nanoseconds / 1e9
+        if not math.isfinite(age) or age < -0.1 or age > max_tf_age_s:
+            raise RuntimeError(f"旋轉 TF 過期或時間異常：{age:.2f}s")
+        t, q = trans.transform.translation, trans.transform.rotation
+        values = [t.x, t.y, q.x, q.y, q.z, q.w]
+        if not all(math.isfinite(v) for v in values):
+            raise RuntimeError("旋轉定位含無效座標。")
+        if sum(v*v for v in values[2:]) < 1e-12:
+            raise RuntimeError("旋轉定位四元數無效。")
+        _, _, yaw = tf_transformations.euler_from_quaternion(values[2:])
+        pose = PoseStamped()
+        pose.header = trans.header
+        pose.pose.position.x, pose.pose.position.y = t.x, t.y
+        pose.pose.orientation = q
+        self.current_world_pose = pose
+        self.curr_pos_on_map = [int(round(self.map.gs/2-t.y/self.map.cs)),
+                                int(round(self.map.gs/2+t.x/self.map.cs))]
+        self.curr_ang_deg_on_map = math.degrees(yaw)
+        return yaw
+
+    def _rotate_to_yaw(self, target_yaw, timeout_s=60.0, max_wz=0.8,
+                       yaw_tolerance_deg=3.0):
+        """Closed-loop cmd_vel rotation, upstream of collision_monitor.
+
+        Uses the same topic as path.py:rotate_to_yaw. Nav2 navigation must
+        already be complete; no navigation or Spin action is sent here.
         """
         import math
-        import tf_transformations
-        from geometry_msgs.msg import PoseStamped
-        
-        # 1. 取得機器人最新的真實座標與角度
-        self._set_nav_curr_pose()
-        
-        # 2. 計算旋轉後的新絕對角度 (度)
-        target_yaw_deg = self.curr_ang_deg_on_map + angle_deg
-        target_yaw_rad = math.radians(target_yaw_deg)
-        
-        # 3. 將角度轉回 ROS 2 要求的四元數 (Quaternion)
-        q = tf_transformations.quaternion_from_euler(0, 0, target_yaw_rad)
-        
-        # 4. 發送原地轉向的 Nav2 指令 (X, Y 維持當前世界座標)
-        goal_pose = PoseStamped()
-        goal_pose.header.frame_id = 'map'
-        goal_pose.header.stamp = self.navigator.get_clock().now().to_msg()
-        
-        # 原地轉向使用原始定位，避免網格取整造成位移。
-        goal_pose.pose.position.x = self.current_world_pose.pose.position.x
-        goal_pose.pose.position.y = self.current_world_pose.pose.position.y
-        
-        goal_pose.pose.orientation.x = q[0]
-        goal_pose.pose.orientation.y = q[1]
-        goal_pose.pose.orientation.z = q[2]
-        goal_pose.pose.orientation.w = q[3]
-        
-        print(f"原地旋轉至目標角度: {target_yaw_deg:.2f} 度", flush=True) 
-        return self._navigate_and_wait(goal_pose)
+        import rclpy
+        from geometry_msgs.msg import Twist
+        if (not all(math.isfinite(v) for v in
+                    (target_yaw, timeout_s, max_wz, yaw_tolerance_deg))
+                or min(timeout_s, max_wz, yaw_tolerance_deg) <= 0):
+            raise ValueError("旋轉參數無效。")
+        if self.navigator is None or not self.navigator.isTaskComplete():
+            raise RuntimeError("請先結束目前導航，再執行 cmd_vel 旋轉。")
+        publisher = self.navigator.create_publisher(Twist, '/cmd_vel_filtered', 10)
+        tolerance = math.radians(yaw_tolerance_deg)
+        deadline = time.monotonic() + timeout_s
+        settled = 0
+        next_log = 0.0
+        try:
+            # Allow discovery and the upstream smoother/filter to finish
+            # publishing their final stop before taking control of this topic.
+            ready_at = time.monotonic() + 1.0
+            while rclpy.ok() and time.monotonic() < ready_at:
+                publisher.publish(Twist())
+                rclpy.spin_once(self.navigator, timeout_sec=0.01)
+                time.sleep(0.04)
+            while rclpy.ok():
+                cycle_start = time.monotonic()
+                if cycle_start >= deadline:
+                    raise RuntimeError("cmd_vel 旋轉逾時；中止後續動作。")
+                # Any TF failure exits through finally and immediately stops.
+                yaw = self._refresh_rotation_pose()
+                error = math.atan2(math.sin(target_yaw-yaw), math.cos(target_yaw-yaw))
+                command = Twist()
+                if abs(error) <= tolerance:
+                    settled += 1
+                else:
+                    settled = 0
+                    command.angular.z = max(-max_wz, min(max_wz, error))
+                publisher.publish(command)
+                if settled >= 3:
+                    return TaskResult.SUCCEEDED
+                if cycle_start >= next_log:
+                    print(f"cmd_vel 旋轉: 目前={math.degrees(yaw):.1f}°，"
+                          f"誤差={math.degrees(error):.1f}°，"
+                          f"wz={command.angular.z:.3f}", flush=True)
+                    next_log = cycle_start + 0.5
+                time.sleep(max(0.0, 0.05-(time.monotonic()-cycle_start)))
+            raise RuntimeError("ROS 已停止；旋轉中止。")
+        finally:
+            # Stop on success, timeout, TF exception and keyboard interruption.
+            try:
+                if rclpy.ok():
+                    for _ in range(3):
+                        publisher.publish(Twist())
+                        time.sleep(0.02)
+            finally:
+                self.navigator.destroy_publisher(publisher)
+
+    def turn(self, angle_deg: float):
+        """Turn by the shortest equivalent relative angle using cmd_vel."""
+        import math
+        if not math.isfinite(angle_deg):
+            raise ValueError("旋轉角度必須是有限數值。")
+        yaw = self._refresh_rotation_pose()
+        return self._rotate_to_yaw(yaw + math.radians(angle_deg))
 
     def get_agent_pose_on_map(self) -> Tuple[float, float, float]:
         """
@@ -473,7 +538,7 @@ class TracerLangRobot:
         """Face the nearest object's map position using ROS world-frame yaw."""
         import math
 
-        self._set_nav_curr_pose()
+        self._refresh_rotation_pose()
         target_pos = self.get_pos(name)
         target_x, target_y = self._grid_to_world(target_pos)
         current = self.current_world_pose.pose.position
@@ -486,14 +551,8 @@ class TracerLangRobot:
         # ROS yaw: +X is zero, counterclockwise is positive. Use the
         # unrounded localization position for both bearing and stopping pose.
         yaw = math.atan2(dy, dx)
-        goal = self._make_goal(self.curr_pos_on_map)
-        goal.pose.position.x = current.x
-        goal.pose.position.y = current.y
-        q = tf_transformations.quaternion_from_euler(0, 0, yaw)
-        (goal.pose.orientation.x, goal.pose.orientation.y,
-         goal.pose.orientation.z, goal.pose.orientation.w) = q
         print(f"面向 {name}，目標朝向: {math.degrees(yaw):.2f} 度", flush=True)
-        return self._navigate_and_wait(goal)
+        return self._rotate_to_yaw(yaw)
 
     def move_north(self, name: str):
         self._set_nav_curr_pose()
